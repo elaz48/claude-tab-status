@@ -16,7 +16,7 @@ Linux-native. Zero workflow change. One bash script.
 
 ```
  ┌───────────────┬───────────────┬───────────────┬───────────────┐
- │ ⚡ api-server  │ 🔴 cardbase   │ ✅ landing    │ 💤 infra      │
+ │ ⚡ api-server  │ 🔴 checkout   │ ✅ landing    │ 💤 infra      │
  └───────────────┴───────────────┴───────────────┴───────────────┘
      working        NEEDS YOU        done            idle
 ```
@@ -71,7 +71,7 @@ Every hook event also records session state, so one command shows all your tabs 
 ```
 $ claude-tab-status list
 STATUS         PROJECT                  SINCE      TTY
-🔴 attention   cardbase                 2m ago     pts/3
+🔴 attention   checkout                 2m ago     pts/3
 ⚡ working     api-server               14s ago    pts/1
 ✅ done        landing-page             8m ago     pts/5
 ```
