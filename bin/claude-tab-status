@@ -17,7 +17,7 @@
 
 set -u
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -147,6 +147,7 @@ cmd_hook() {
   case "$event" in
     UserPromptSubmit) status="working" ;;
     Stop)             status="done" ;;
+    PostToolUse)      status="working" ;;
     SessionStart)     status="idle" ;;
     Notification)     status="attention" ;;
     SessionEnd)       status="end" ;;

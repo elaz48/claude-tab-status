@@ -44,6 +44,8 @@ cd claude-tab-status
 ./install.sh
 ```
 
+The installer registers the hooks and also sets `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` in your settings' `env` block, the official switch that stops Claude Code from overwriting your status titles with its own. Prefer Claude's native titles? Install with `--keep-native-title` (the 🔴 and ✅ states will still stick, but 💤 and ⚡ will get overwritten).
+
 Restart your Claude Code sessions, then watch the magic:
 
 ```bash
@@ -121,7 +123,7 @@ CTS_DEBUG=0              # 1 = log to $XDG_RUNTIME_DIR/claude-tab-status/debug.l
 
 ## How it works
 
-Claude Code fires lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `Notification`, `Stop`, `SessionEnd`) and pipes a JSON payload to the hook command's stdin. The script:
+Claude Code fires lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`) and pipes a JSON payload to the hook command's stdin. The script:
 
 1. reads `hook_event_name`, `cwd`, `session_id` and `message` from the payload,
 2. resolves the terminal device of that exact session (controlling tty, with a process-tree walk as fallback),
@@ -131,9 +133,11 @@ Claude Code fires lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `Notifica
 
 Because the title goes to the tty of the session that emitted the event, every tab gets its own status. Works the same over SSH.
 
+The `PostToolUse` hook re-asserts ⚡ on every tool call. This keeps the working state alive during long turns, and it is also what flips 🔴 back to ⚡ the moment you approve a permission prompt and Claude resumes.
+
 ## Good to know
 
-- **Claude Code also writes tab titles.** Its own updates can overwrite the status between events. In practice the state you care about most, 🔴, sticks: it is written after Claude pauses, and the prefix refreshes on every transition anyway.
+- **💤 or ⚡ not sticking?** That means Claude Code's own title updates are still on and racing with the status writer. Re-run `./install.sh` (it sets `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` since v0.3.0) and restart your sessions. If you installed with `--keep-native-title`, this is expected behavior.
 - **tmux:** inside tmux the OSC sequence sets the pane title. Add `set -g set-titles on` to `~/.tmux.conf` to propagate it to the outer window title.
 - **`idle_prompt` maps to ✅, not 🔴,** on purpose: a session that simply finished should not scream for attention.
 
@@ -150,6 +154,8 @@ Because the title goes to the tty of the session that emitted the event, every t
 ./uninstall.sh          # removes hooks (with backup), binary, runtime state
 ./uninstall.sh --purge  # also removes the config file
 ```
+
+Uninstalling also removes `env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE` (only if it is set to `"1"`), so Claude Code's native titles come back automatically. As always, a timestamped backup of `settings.json` is created before the change.
 
 ---
 

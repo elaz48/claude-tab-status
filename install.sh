@@ -23,12 +23,16 @@ die()  { printf '\033[31m✘\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- options -----------------------------------------------------------------
 NO_NOTIFY=0
+KEEP_TITLE=0
 for arg in "$@"; do
   case "$arg" in
     --no-notify) NO_NOTIFY=1 ;;
+    --keep-native-title) KEEP_TITLE=1 ;;
     -h|--help)
-      echo "Usage: ./install.sh [--no-notify]"
-      echo "  --no-notify   quiet mode: tab title indicators only, no desktop notifications"
+      echo "Usage: ./install.sh [--no-notify] [--keep-native-title]"
+      echo "  --no-notify          quiet mode: tab title indicators only, no desktop notifications"
+      echo "  --keep-native-title  do NOT disable Claude Code's own title updates"
+      echo "                       (its updates will overwrite the idle/working status)"
       exit 0 ;;
     *) die "Unknown option: $arg (try --help)" ;;
   esac
@@ -79,6 +83,7 @@ NEW_HOOKS=$(cat <<EOF
 {
   "SessionStart":     [ { "hooks": [ { "type": "command", "command": "$HOOK_CMD" } ] } ],
   "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "$HOOK_CMD" } ] } ],
+  "PostToolUse":      [ { "hooks": [ { "type": "command", "command": "$HOOK_CMD" } ] } ],
   "Stop":             [ { "hooks": [ { "type": "command", "command": "$HOOK_CMD" } ] } ],
   "SessionEnd":       [ { "hooks": [ { "type": "command", "command": "$HOOK_CMD" } ] } ],
   "Notification": [
@@ -107,6 +112,20 @@ jq --argjson new "$NEW_HOOKS" '
 jq empty "$TMP" || die "Generated settings failed validation, aborting. Your original file is untouched."
 mv "$TMP" "$SETTINGS"
 say "Hooks registered in $SETTINGS"
+
+# Claude Code writes its own two-state tab title, which races with (and
+# overwrites) the idle/working indicators. Disabling it via the official
+# env var makes claude-tab-status the sole title writer.
+if (( KEEP_TITLE == 0 )); then
+  TMP=$(mktemp)
+  jq '.env //= {} | .env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE //= "1"' "$SETTINGS" > "$TMP"
+  jq empty "$TMP" || die "Generated settings failed validation, aborting."
+  mv "$TMP" "$SETTINGS"
+  say "Disabled Claude Code's own title updates (env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1)"
+else
+  warn "Keeping Claude Code's native title updates: expect the 💤 idle and ⚡ working"
+  warn "indicators to be overwritten between events. 🔴 and ✅ will still stick."
+fi
 
 # --- done --------------------------------------------------------------------
 cat <<'EOF'

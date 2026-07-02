@@ -35,10 +35,16 @@ if [[ -f "$SETTINGS" ]]; then
       | .hooks |= with_entries(select((.value | length) > 0))
       | if (.hooks | length) == 0 then del(.hooks) else . end
     else . end
+    | if ((.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE? // "") == "1") then
+        del(.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE)
+        | if ((.env // {}) | length) == 0 then del(.env) else . end
+      else . end
   ' "$SETTINGS" > "$TMP"
   jq empty "$TMP" || die "Generated settings failed validation, aborting."
   mv "$TMP" "$SETTINGS"
   say "Removed claude-tab-status hooks from $SETTINGS (backup: $BACKUP)"
+  say "Removed env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE if it was set to 1,"
+  say "so Claude Code's native title updates are back."
 fi
 
 rm -f "$BIN_PATH" && say "Removed $BIN_PATH"
