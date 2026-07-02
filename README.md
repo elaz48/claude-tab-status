@@ -14,14 +14,7 @@ Linux-native. Zero workflow change. One bash script.
 
 </div>
 
-![claude-tab-status demo: the title switches from working to done as Claude finishes](assets/demo.gif)
-
-```
- ┌───────────────┬───────────────┬───────────────┬───────────────┐
- │ ⚡ api-server  │ 🔴 checkout   │ ✅ landing    │ 💤 infra      │
- └───────────────┴───────────────┴───────────────┴───────────────┘
-     working        NEEDS YOU        done            idle
-```
+![Four terminal tabs, each showing a Claude Code session status: idle, working, needs attention, done](assets/hero.png)
 
 ## Why
 
@@ -36,12 +29,16 @@ Claude Code's built-in tab title only knows two states, so "finished" and "block
 | 🔴 | **attention** | Claude is waiting for YOU (permission / input) | yes, critical |
 | ✅ | **done** | turn finished, your move | yes, normal |
 
+Here it is live. The session below asks for approval to run a shell command: the tab title flips from ⚡ to 🔴 the moment Claude starts waiting, back to ⚡ after approval, and to ✅ when the turn completes:
+
+![Live demo: a permission prompt flips the tab title from working to attention, then done](assets/demo.gif)
+
 No tmux. No wrapper app. No new UI to learn. It hooks into Claude Code's official [hooks API](https://code.claude.com/docs/en/hooks-guide), observes lifecycle events, and writes the status straight to each session's own terminal. Keep using your tabs exactly as before.
 
 ## Quick start
 
 ```bash
-git clone https://github.com/elaz48/claude-tab-status.git
+git clone https://github.com/USERNAME/claude-tab-status.git
 cd claude-tab-status
 ./install.sh
 ```
