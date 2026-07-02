@@ -14,6 +14,8 @@ Linux-native. Zero workflow change. One bash script.
 
 </div>
 
+![claude-tab-status demo: the title switches from working to done as Claude finishes](assets/demo.gif)
+
 ```
  ┌───────────────┬───────────────┬───────────────┬───────────────┐
  │ ⚡ api-server  │ 🔴 checkout   │ ✅ landing    │ 💤 infra      │
@@ -140,6 +142,7 @@ The `PostToolUse` hook re-asserts ⚡ on every tool call. This keeps the working
 - **💤 or ⚡ not sticking?** That means Claude Code's own title updates are still on and racing with the status writer. Re-run `./install.sh` (it sets `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` since v0.3.0) and restart your sessions. If you installed with `--keep-native-title`, this is expected behavior.
 - **tmux:** inside tmux the OSC sequence sets the pane title. Add `set -g set-titles on` to `~/.tmux.conf` to propagate it to the outer window title.
 - **`idle_prompt` maps to ✅, not 🔴,** on purpose: a session that simply finished should not scream for attention.
+- **GNOME Terminal crashes when you detach a tab?** That is a known Ubuntu 24.04 gnome-terminal bug ([LP#2049923](https://bugs.launchpad.net/bugs/2049923)), unrelated to this tool: it reproduces with plain shell tabs too, and one gnome-terminal-server crash takes all windows down. Workaround reported by affected users: untick "Use colors from system theme" in the terminal profile preferences.
 
 ## Security
 
