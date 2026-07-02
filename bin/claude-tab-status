@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+#
+# claude-tab-status
+# Linux-native tab status indicators for Claude Code sessions.
+#
+# Shows a per-session status emoji in your terminal tab title and sends a
+# desktop notification when a session needs your attention, driven by Claude
+# Code's official hooks API. No tmux, no wrapper, no workflow change.
+#
+#   working    Claude is processing your prompt
+#   attention  Claude is waiting for permission or input
+#   done       Claude finished, it is your turn
+#   idle       session started, nothing submitted yet
+#
+# https://github.com/USERNAME/claude-tab-status
+# License: MIT
+
+set -u
+
+VERSION="0.2.0"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# Defaults can be overridden in $XDG_CONFIG_HOME/claude-tab-status/config
+# (a plain shell file that is sourced) or via environment variables.
+# ---------------------------------------------------------------------------
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/claude-tab-status/config"
+# shellcheck disable=SC1090
+[[ -f "$CONFIG_FILE" ]] && . "$CONFIG_FILE"
+
+: "${CTS_EMOJI_WORKING:=⚡}"
+: "${CTS_EMOJI_ATTENTION:=🔴}"
+: "${CTS_EMOJI_DONE:=✅}"
+: "${CTS_EMOJI_IDLE:=💤}"
+: "${CTS_NOTIFY:=1}"             # master switch: 0 = tab titles only, no desktop notifications
+: "${CTS_NOTIFY_ATTENTION:=1}"   # notify-send when Claude waits for you
+: "${CTS_NOTIFY_DONE:=1}"        # notify-send when Claude finishes a turn
+: "${CTS_STALE_HOURS:=12}"       # prune session state older than this
+: "${CTS_DEBUG:=0}"              # 1 = append debug lines to state dir log
+
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  STATE_DIR="$XDG_RUNTIME_DIR/claude-tab-status"
+else
+  STATE_DIR="/tmp/claude-tab-status-$(id -u)"
+fi
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+dbg() {
+  [[ "$CTS_DEBUG" == "1" ]] || return 0
+  mkdir -p "$STATE_DIR" 2>/dev/null
+  printf '%s %s\n' "$(date -Is)" "$*" >> "$STATE_DIR/debug.log" 2>/dev/null
+}
+
+ensure_state_dir() {
+  mkdir -p "$STATE_DIR" 2>/dev/null && chmod 700 "$STATE_DIR" 2>/dev/null
+}
+
+# Find the terminal device this session is attached to.
+# 1) CTS_TTY override (used by tests)
+# 2) the controlling terminal, /dev/tty
+# 3) walk up the process tree until an ancestor has a tty
+find_tty() {
+  if [[ -n "${CTS_TTY:-}" ]]; then
+    printf '%s' "$CTS_TTY"
+    return 0
+  fi
+  if (exec 3>/dev/tty) 2>/dev/null; then
+    printf '/dev/tty'
+    return 0
+  fi
+  local pid=$$ t
+  while [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 1 )); do
+    t=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$t" && "$t" != "?" && -e "/dev/$t" ]]; then
+      printf '/dev/%s' "$t"
+      return 0
+    fi
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    [[ -z "$pid" ]] && break
+  done
+  return 1
+}
+
+# Set the tab/window title with an OSC 0 escape sequence written straight to
+# the session's terminal device, so it works in GNOME Terminal, Konsole,
+# Kitty, WezTerm, Ghostty, Alacritty, XTerm and most others.
+set_title() {
+  local title="$1" tty
+  tty=$(find_tty) || { dbg "no tty found, skipping title '$title'"; return 0; }
+  printf '\033]0;%s\007' "$title" > "$tty" 2>/dev/null || dbg "write to $tty failed"
+  dbg "title '$title' -> $tty"
+}
+
+notify() { # urgency, icon, summary, body
+  [[ "$CTS_NOTIFY" == "1" ]] || return 0
+  command -v notify-send >/dev/null 2>&1 || return 0
+  notify-send -a "Claude Code" -u "$1" -i "$2" "$3" "$4" >/dev/null 2>&1 || true
+}
+
+status_emoji() {
+  case "$1" in
+    working)   printf '%s' "$CTS_EMOJI_WORKING" ;;
+    attention) printf '%s' "$CTS_EMOJI_ATTENTION" ;;
+    done)      printf '%s' "$CTS_EMOJI_DONE" ;;
+    idle)      printf '%s' "$CTS_EMOJI_IDLE" ;;
+    *)         printf '%s' "?" ;;
+  esac
+}
+
+write_state() { # session_id, status, project, cwd, tty, message
+  ensure_state_dir || return 0
+  local f="$STATE_DIR/$1.json"
+  jq -n \
+    --arg session_id "$1" --arg status "$2" --arg project "$3" \
+    --arg cwd "$4" --arg tty "$5" --arg message "$6" \
+    --argjson updated_at "$(date +%s)" \
+    '{session_id:$session_id, status:$status, project:$project,
+      cwd:$cwd, tty:$tty, message:$message, updated_at:$updated_at}' \
+    > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# hook: called by Claude Code, JSON event payload arrives on stdin.
+# An optional argument overrides the status derived from hook_event_name
+# (used by the Notification matchers configured at install time).
+#
+# IMPORTANT: never write to stdout here. For UserPromptSubmit and
+# SessionStart hooks, stdout is injected into Claude's context.
+# ---------------------------------------------------------------------------
+cmd_hook() {
+  local override="${1:-}"
+  local input event cwd session_id message project status emoji tty
+
+  input=$(cat 2>/dev/null) || true
+  [[ -z "$input" ]] && return 0
+
+  event=$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null)
+  cwd=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+  session_id=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
+  message=$(jq -r '.message // empty' <<<"$input" 2>/dev/null)
+
+  project="claude"
+  [[ -n "$cwd" ]] && project=$(basename "$cwd")
+
+  case "$event" in
+    UserPromptSubmit) status="working" ;;
+    Stop)             status="done" ;;
+    SessionStart)     status="idle" ;;
+    Notification)     status="attention" ;;
+    SessionEnd)       status="end" ;;
+    *)                status="" ;;
+  esac
+  [[ -n "$override" ]] && status="$override"
+  dbg "event=$event override=$override status=$status project=$project session=$session_id"
+  [[ -z "$status" ]] && return 0
+
+  if [[ "$status" == "end" ]]; then
+    [[ -n "$session_id" ]] && rm -f "$STATE_DIR/$session_id.json" 2>/dev/null
+    set_title "$project"
+    return 0
+  fi
+
+  emoji=$(status_emoji "$status")
+  set_title "$emoji $project"
+
+  tty=$(find_tty) || tty=""
+  [[ -n "$session_id" ]] && write_state "$session_id" "$status" "$project" "$cwd" "$tty" "$message"
+
+  if [[ "$status" == "attention" && "$CTS_NOTIFY_ATTENTION" == "1" ]]; then
+    notify critical dialog-question \
+      "Claude needs you · $project" "${message:-Waiting for your input}"
+  elif [[ "$status" == "done" && "$CTS_NOTIFY_DONE" == "1" && "$event" == "Stop" ]]; then
+    notify normal utilities-terminal \
+      "Claude finished · $project" "Ready for your next prompt"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# list: overview of all known sessions and their current status
+# ---------------------------------------------------------------------------
+human_age() {
+  local s=$1
+  if   (( s < 60 ));    then printf '%ds ago' "$s"
+  elif (( s < 3600 ));  then printf '%dm ago' $(( s / 60 ))
+  elif (( s < 86400 )); then printf '%dh ago' $(( s / 3600 ))
+  else                       printf '%dd ago' $(( s / 86400 ))
+  fi
+}
+
+cmd_list() {
+  ensure_state_dir
+  local now files f status project tty updated age color reset dim any=0
+  now=$(date +%s)
+  reset=$'\033[0m'; dim=$'\033[2m'
+  shopt -s nullglob
+  files=("$STATE_DIR"/*.json)
+  shopt -u nullglob
+
+  printf '%-14s %-24s %-10s %s\n' "STATUS" "PROJECT" "SINCE" "TTY"
+  for f in "${files[@]}"; do
+    status=$(jq -r '.status // empty' "$f" 2>/dev/null) || continue
+    project=$(jq -r '.project // "?"' "$f" 2>/dev/null)
+    tty=$(jq -r '.tty // ""' "$f" 2>/dev/null)
+    updated=$(jq -r '.updated_at // 0' "$f" 2>/dev/null)
+    age=$(( now - updated ))
+    # prune stale entries and sessions whose terminal is gone
+    if (( age > CTS_STALE_HOURS * 3600 )) || { [[ -n "$tty" && "$tty" != "/dev/tty" ]] && [[ ! -e "$tty" ]]; }; then
+      rm -f "$f"
+      continue
+    fi
+    case "$status" in
+      attention) color=$'\033[1;31m' ;;
+      working)   color=$'\033[33m'  ;;
+      done)      color=$'\033[32m'  ;;
+      *)         color="$dim"       ;;
+    esac
+    printf '%s%-14s%s %-24s %s%-10s%s %s\n' \
+      "$color" "$(status_emoji "$status") $status" "$reset" \
+      "$project" "$dim" "$(human_age "$age")" "$reset" "${tty#/dev/}"
+    any=1
+  done
+  (( any == 0 )) && printf '%s(no active Claude Code sessions tracked yet)%s\n' "$dim" "$reset"
+}
+
+# ---------------------------------------------------------------------------
+# test: cycle the statuses on the current tab and fire a test notification
+# ---------------------------------------------------------------------------
+cmd_test() {
+  local project
+  project=$(basename "$PWD")
+  echo "Cycling tab title through all statuses (watch this tab)..."
+  for s in idle working attention done; do
+    set_title "$(status_emoji "$s") $project"
+    echo "  -> $(status_emoji "$s") $s"
+    sleep 1.2
+  done
+  set_title "$project"
+  notify normal utilities-terminal "claude-tab-status" "Test notification works"
+  echo "Done. If the tab title changed and a notification appeared, you are all set."
+}
+
+cmd_clear() {
+  set_title "$(basename "$PWD")"
+  rm -f "$STATE_DIR"/*.json 2>/dev/null
+  echo "Tab title reset, session state cleared."
+}
+
+# Toggle desktop notifications by writing CTS_NOTIFY to the config file.
+# Tab titles are unaffected: they are always on.
+cmd_notify() {
+  local mode="${1:-}" v
+  case "$mode" in
+    on)  v=1 ;;
+    off) v=0 ;;
+    *)   echo "Usage: claude-tab-status notify on|off"; return 1 ;;
+  esac
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  if [[ -f "$CONFIG_FILE" ]] && grep -q '^CTS_NOTIFY=' "$CONFIG_FILE"; then
+    sed -i "s/^CTS_NOTIFY=.*/CTS_NOTIFY=$v/" "$CONFIG_FILE"
+  else
+    printf 'CTS_NOTIFY=%s\n' "$v" >> "$CONFIG_FILE"
+  fi
+  echo "Desktop notifications: $mode (tab title indicators always stay on)"
+}
+
+usage() {
+  cat <<EOF
+claude-tab-status $VERSION
+Linux-native tab status indicators for Claude Code sessions.
+
+Usage:
+  claude-tab-status hook [status]   handle a Claude Code hook event (stdin JSON)
+  claude-tab-status list            show all tracked sessions and their status
+  claude-tab-status test            cycle statuses on this tab + test notification
+  claude-tab-status clear           reset this tab title and clear session state
+  claude-tab-status notify on|off   toggle desktop notifications (tab titles stay on)
+  claude-tab-status version         print version
+
+Config file: ~/.config/claude-tab-status/config
+Variables:   CTS_NOTIFY CTS_EMOJI_WORKING CTS_EMOJI_ATTENTION CTS_EMOJI_DONE CTS_EMOJI_IDLE
+             CTS_NOTIFY_ATTENTION CTS_NOTIFY_DONE CTS_STALE_HOURS CTS_DEBUG
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+  hook)
+    shift
+    # Hooks must never break Claude Code and must never print to stdout.
+    ensure_state_dir || true
+    cmd_hook "$@" >/dev/null 2>>"${STATE_DIR}/error.log" || true
+    exit 0
+    ;;
+  list)    cmd_list ;;
+  test)    cmd_test ;;
+  clear)   cmd_clear ;;
+  notify)  shift; cmd_notify "$@" ;;
+  version) echo "$VERSION" ;;
+  ""|-h|--help|help) usage ;;
+  *) usage; exit 1 ;;
+esac
