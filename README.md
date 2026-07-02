@@ -141,6 +141,10 @@ The `PostToolUse` hook re-asserts ⚡ on every tool call. This keeps the working
 - **tmux:** inside tmux the OSC sequence sets the pane title. Add `set -g set-titles on` to `~/.tmux.conf` to propagate it to the outer window title.
 - **`idle_prompt` maps to ✅, not 🔴,** on purpose: a session that simply finished should not scream for attention.
 
+## Security
+
+No network calls, no telemetry, one auditable bash file. Payload-derived values are stripped of control characters before touching your terminal (escape-sequence injection from hostile directory names is neutralized), path components are whitelist-filtered, and the state directory refuses symlinks. Settings changes are additive, jq-validated, and preceded by permission-preserving backups. Details and reporting: [SECURITY.md](SECURITY.md).
+
 ## Roadmap
 
 - Focus-jump: click a notification or a `list` row to raise the right tab (Kitty and WezTerm expose remote-control APIs)

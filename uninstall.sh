@@ -23,7 +23,7 @@ command -v jq >/dev/null 2>&1 || die "jq is required to edit settings.json."
 
 if [[ -f "$SETTINGS" ]]; then
   BACKUP="$SETTINGS.bak.$(date +%Y%m%d%H%M%S)"
-  cp "$SETTINGS" "$BACKUP"
+  cp -p "$SETTINGS" "$BACKUP"
   TMP=$(mktemp)
   jq '
     if .hooks then

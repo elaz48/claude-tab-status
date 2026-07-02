@@ -76,7 +76,7 @@ fi
 jq empty "$SETTINGS" 2>/dev/null || die "$SETTINGS is not valid JSON. Fix it manually, then re-run."
 
 BACKUP="$SETTINGS.bak.$(date +%Y%m%d%H%M%S)"
-cp "$SETTINGS" "$BACKUP"
+cp -p "$SETTINGS" "$BACKUP"
 say "Backed up settings to $BACKUP"
 
 NEW_HOOKS=$(cat <<EOF

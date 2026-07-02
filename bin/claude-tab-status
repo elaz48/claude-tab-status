@@ -17,7 +17,7 @@
 
 set -u
 
-VERSION="0.3.0"
+VERSION="0.3.1"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -49,12 +49,32 @@ fi
 # ---------------------------------------------------------------------------
 dbg() {
   [[ "$CTS_DEBUG" == "1" ]] || return 0
-  mkdir -p "$STATE_DIR" 2>/dev/null
+  ensure_state_dir || return 0
   printf '%s %s\n' "$(date -Is)" "$*" >> "$STATE_DIR/debug.log" 2>/dev/null
 }
 
 ensure_state_dir() {
-  mkdir -p "$STATE_DIR" 2>/dev/null && chmod 700 "$STATE_DIR" 2>/dev/null
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  chmod 700 "$STATE_DIR" 2>/dev/null
+  # refuse to use a dir we do not own or that is a symlink (hardening for
+  # the /tmp fallback; XDG_RUNTIME_DIR is already private per user)
+  [[ -O "$STATE_DIR" && ! -L "$STATE_DIR" ]] || return 1
+}
+
+# Strip control characters (ESC, BEL, newlines, ...) and cap the length.
+# Values originating from the hook payload, like the cwd basename or the
+# notification message, end up inside terminal escape sequences and
+# notifications; a hostile directory name must not be able to inject its
+# own escape sequences.
+sanitize() {
+  local s
+  s=$(printf '%s' "${1:-}" | tr -d '\000-\037\177')
+  printf '%.160s' "$s"
+}
+
+# Whitelist filter for values used in file paths.
+sanitize_id() {
+  printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9._-' | sed 's/^\.*//' | cut -c1-128
 }
 
 # Find the terminal device this session is attached to.
@@ -96,7 +116,7 @@ set_title() {
 notify() { # urgency, icon, summary, body
   [[ "$CTS_NOTIFY" == "1" ]] || return 0
   command -v notify-send >/dev/null 2>&1 || return 0
-  notify-send -a "Claude Code" -u "$1" -i "$2" "$3" "$4" >/dev/null 2>&1 || true
+  notify-send -a "Claude Code" -u "$1" -i "$2" -- "$3" "$4" >/dev/null 2>&1 || true
 }
 
 status_emoji() {
@@ -138,11 +158,12 @@ cmd_hook() {
 
   event=$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null)
   cwd=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
-  session_id=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
-  message=$(jq -r '.message // empty' <<<"$input" 2>/dev/null)
+  session_id=$(sanitize_id "$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)")
+  message=$(sanitize "$(jq -r '.message // empty' <<<"$input" 2>/dev/null)")
 
   project="claude"
-  [[ -n "$cwd" ]] && project=$(basename "$cwd")
+  [[ -n "$cwd" ]] && project=$(sanitize "$(basename "$cwd")")
+  [[ -z "$project" ]] && project="claude"
 
   case "$event" in
     UserPromptSubmit) status="working" ;;
@@ -293,8 +314,13 @@ case "${1:-}" in
   hook)
     shift
     # Hooks must never break Claude Code and must never print to stdout.
-    ensure_state_dir || true
-    cmd_hook "$@" >/dev/null 2>>"${STATE_DIR}/error.log" || true
+    # Only log stderr into the state dir if it passed the ownership check;
+    # otherwise discard it (avoids writes through a hostile symlink).
+    if ensure_state_dir; then
+      cmd_hook "$@" >/dev/null 2>>"${STATE_DIR}/error.log" || true
+    else
+      cmd_hook "$@" >/dev/null 2>&1 || true
+    fi
     exit 0
     ;;
   list)    cmd_list ;;
