@@ -38,7 +38,7 @@ No tmux. No wrapper app. No new UI to learn. It hooks into Claude Code's officia
 ## Quick start
 
 ```bash
-git clone https://github.com/USERNAME/claude-tab-status.git
+git clone https://github.com/elaz48/claude-tab-status.git
 cd claude-tab-status
 ./install.sh
 ```
